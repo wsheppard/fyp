@@ -21,6 +21,20 @@
 #include "MPU6050.h"
 
 
+/* Variables for PID */
+float P_err = 0;
+float I_err = 0;
+float D_err = 0;
+
+float temp1;
+
+#define KP	0.65
+#define KD	0.195
+#define KI	0
+
+
+float pid (float sp, float pv);
+
 int i2c_write_bytes(int addr, unsigned char* data,int n);
 int i2c_read_byte(int addr, unsigned char*data);
 int i2c_read_bytes(int addr, unsigned char*data,int n);
@@ -47,81 +61,110 @@ typedef const signed char * fStr;
 #define UPPER 75000
 #define LOWER 65000
 
+#define OUTPUTFACTOR 1
+#define BIAS0 1
+#define BIAS1 1.1
+#define CONVERT 200
+
+short tempX;
+int PWM0 = 70000;
+int PWM1 = 70000;
+
+
+int PWM0DISP,PWM1DISP;
+int PIDDISP;
+int ACCELDISP;
+int ERRORDISP;
+
+int x = 0;
+int inc0 = FACTOR;
+int inc1 = -FACTOR;
+
+
+void vTaskDisplay (void*params){
+
+while(1){
+	printf("ACCEL[%05d] PIDO:E[%d:%d] PID[%d,%d,%d] PWM[%d:%d].\n",
+					ACCELDISP,
+					PIDDISP,
+					ERRORDISP,
+					(int)(P_err),
+					(int)(I_err),
+					(int)(D_err),
+					PWM0DISP,
+					PWM1DISP);
+
+
+	vTaskDelay(200);
+}
+
+}
+
 
 /* Task to be created. */
 void vTaskCode( void * pvParameters )
 {
 
-	short tempX;
-	int PWM0 = 70000;
-	int PWM1 = 70000;
-	int x = 0;
-	int inc0 = FACTOR;
-	int inc1 = -FACTOR;
+
 
 
   for( ;; )
   {
 
-		IOWR(PWM1_BASE,0,PWM0);
-		IOWR(PWM1_BASE,1,PWM1);
-
-		PWM0 += inc0;
-		PWM1 += inc1;
-
-		if(PWM0>UPPER){
-			inc0 = -FACTOR;
-			PWM0=UPPER;
-		}
-
-		if(PWM0<LOWER){
-			inc0 = FACTOR;
-			PWM0=LOWER;
-		}
-
-		if(PWM1>UPPER){
-			inc1 = -FACTOR;
-			PWM1=UPPER;
-		}
-
-		if(PWM1<LOWER){
-			inc1 = FACTOR;
-			PWM1=LOWER;
-		}
-
-
-
-		//i2c_read_byte(MPU6050_RA_,&data);
-
 		i2c_read_bytes(MPU6050_RA_ACCEL_XOUT_H,&tempX,2);
+		tempX = swap16(tempX);
 
-		tempX = swap16(tempX) + 968;
+		ACCELDISP = tempX;
 
+		temp1 = pid(-1084,(float)tempX);
 
-		printf("Read: [%05d] PWM[%d:%d].\n",
-						tempX, PWM0,PWM1);
+		PIDDISP = temp1;
 
+		PWM0 = 75000 - temp1;
+		PWM1 = 75000 + temp1;
 
-#if 0
-		printf("Read: [%05d][%05d][%05d]  [%05d][%05d][%05d].\n",
-				(signed short)swap16(GYROdata.X),
-				(signed short)swap16(GYROdata.Y),
-				(signed short)swap16(GYROdata.Z),
-				(signed short)swap16(GYROdata.gX),
-						(signed short)swap16(GYROdata.gY),
-						(signed short)swap16(GYROdata.gZ)
+		PWM0DISP = PWM0;
+		PWM1DISP = PWM1;
 
-		);
-#endif
+		if(PWM0<=100000 || PWM0>60000){
+			IOWR(PWM1_BASE,0,PWM0);
+		}
 
+		if(PWM1<=100000 || PWM1>60000){
+			IOWR(PWM1_BASE,1,PWM1);
+		}
 
+		//usleep(1000);
 
-		vTaskDelay(50);
+		vTaskDelay(1);
 
-
-      /* Task code goes here. */
   }
 }
+
+
+
+float pid (float sp, float pv)
+{
+
+	static float err_old = 0;
+	static float err = 0;
+
+	err_old = err;
+	err = sp - pv;
+
+	ERRORDISP = err;
+
+	// note
+	P_err = err;
+	I_err += err_old;
+	D_err = err - err_old;
+
+	return KP*P_err + KI*I_err + KD*D_err;
+
+}
+
+
+
 
 /* Function that creates a task. */
 void initFYP( void ){
@@ -139,9 +182,8 @@ void initFYP( void ){
 			ALT_CPU_FREQ,
 			100000);
 
-	/* Turn of sleep mode */
+	/* Turn off sleep mode */
 	i2c_write_byte(MPU6050_RA_PWR_MGMT_1,0);
-
 
 	i2c_read_byte(MPU6050_RA_CONFIG,&temp);
 
@@ -163,25 +205,55 @@ void initFYP( void ){
 	case is declared static.  If it was just an an automatic stack variable
 	it might no longer exist, or at least have been corrupted, by the time
 	the new task attempts to access it. */
-	xTaskCreate( vTaskCode, (fStr)"NAME", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY,
+	xTaskCreate( vTaskCode, (fStr)"PID", configMINIMAL_STACK_SIZE, NULL, configMAX_PRIORITIES - 1 ,
 			   NULL );
 
 	/* Use the handle to delete the task. */
 	//vTaskDelete( xHandle );
+
+	xTaskCreate( vTaskDisplay, (fStr)"Display", configMINIMAL_STACK_SIZE, NULL, tskIDLE_PRIORITY,
+			   NULL );
+
 }
 
 
 
 int main(){
 
+
+	int a = 0;
+
 	initFYP();
 
-	printf("Waiting 8 secs for motor calibration.....\n");
+	a = (int)IORD_ALTERA_AVALON_PIO_DATA(PIO_0_BASE);
+
+
+	if (a!=0){
+		printf("Turn off the switches!\n");
+
+		while(a!=0){
+			a = (int)IORD_ALTERA_AVALON_PIO_DATA(PIO_0_BASE);
+			usleep(1000000);
+		}
+	}
+
+	printf("OK. Push first switch up after motor calibration.....\n");
 
 	IOWR(PWM1_BASE,0,50000);
 	IOWR(PWM1_BASE,1,50000);
 
-	usleep(8000000);
+
+	while(a == 0){
+
+		a = (int)IORD_ALTERA_AVALON_PIO_DATA(PIO_0_BASE);
+
+		//printf("Switches[%d]",a);
+
+		usleep(1000000);
+
+	}
+
+
 
 	printf("And we're off.....\n");
 
