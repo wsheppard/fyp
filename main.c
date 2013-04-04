@@ -28,8 +28,8 @@ float D_err = 0;
 
 float temp1;
 
-#define KP	0.65
-#define KD	0.195
+#define KP	0.35
+#define KD	0
 #define KI	0
 
 
@@ -69,7 +69,13 @@ typedef const signed char * fStr;
 short tempX;
 int PWM0 = 70000;
 int PWM1 = 70000;
+int KILL = 0;
 
+// Clockwise
+#define PWM0_IDLE	75000
+
+// Anti-clockwise
+#define PWM1_IDLE	75000
 
 int PWM0DISP,PWM1DISP;
 int PIDDISP;
@@ -82,6 +88,7 @@ int inc1 = -FACTOR;
 
 
 void vTaskDisplay (void*params){
+	int a;
 
 while(1){
 	printf("ACCEL[%05d] PIDO:E[%d:%d] PID[%d,%d,%d] PWM[%d:%d].\n",
@@ -94,6 +101,11 @@ while(1){
 					PWM0DISP,
 					PWM1DISP);
 
+
+	a = (int)IORD_ALTERA_AVALON_PIO_DATA(PIO_0_BASE);
+
+	if(a==0)
+		KILL=1;
 
 	vTaskDelay(200);
 }
@@ -108,7 +120,7 @@ void vTaskCode( void * pvParameters )
 
 
 
-  for( ;; )
+  while(KILL!=1)
   {
 
 		i2c_read_bytes(MPU6050_RA_ACCEL_XOUT_H,&tempX,2);
@@ -118,19 +130,20 @@ void vTaskCode( void * pvParameters )
 
 		temp1 = pid(-1084,(float)tempX);
 
+
 		PIDDISP = temp1;
 
-		PWM0 = 75000 - temp1;
-		PWM1 = 75000 + temp1;
+		PWM0 = PWM0_IDLE - temp1;
+		PWM1 = PWM1_IDLE + temp1;
 
 		PWM0DISP = PWM0;
 		PWM1DISP = PWM1;
 
-		if(PWM0<=100000 || PWM0>60000){
+		if(PWM0<=100000 || PWM0>50000){
 			IOWR(PWM1_BASE,0,PWM0);
 		}
 
-		if(PWM1<=100000 || PWM1>60000){
+		if(PWM1<=100000 || PWM1>50000){
 			IOWR(PWM1_BASE,1,PWM1);
 		}
 
@@ -139,6 +152,11 @@ void vTaskCode( void * pvParameters )
 		vTaskDelay(1);
 
   }
+
+	IOWR(PWM1_BASE,0,50000);
+	IOWR(PWM1_BASE,1,50000);
+
+
 }
 
 
