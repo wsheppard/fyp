@@ -9,6 +9,7 @@
 #include <task.h>
 #include <system.h>
 #include <stdio.h>
+#include <math.h>
 
 #include <altera_avalon_pio_regs.h>
 #include <unistd.h>
@@ -22,18 +23,25 @@
 
 
 /* Variables for PID */
-float P_err = 0;
-float I_err = 0;
-float D_err = 0;
+//float P_err = 0;
+//float I_err = 0;
+//float D_err = 0;
 
 float temp1;
 
-#define KP	0.35
-#define KD	0
-#define KI	0
+#define KP0	300
+#define KD0	-200
+#define KI0	0
+
+#define KP1	110
+#define KD1	30
+#define KI1	0
 
 
-float pid (float sp, float pv);
+
+
+float pid0 (float sp, float pv);
+float pid1 (float sp, float pv);
 
 int i2c_write_bytes(int addr, unsigned char* data,int n);
 int i2c_read_byte(int addr, unsigned char*data);
@@ -61,15 +69,15 @@ typedef const signed char * fStr;
 #define UPPER 75000
 #define LOWER 65000
 
-#define OUTPUTFACTOR 1
-#define BIAS0 1
-#define BIAS1 1.1
-#define CONVERT 200
+#define ACCEL_CENTRE 137
 
 short tempX;
 int PWM0 = 70000;
 int PWM1 = 70000;
 int KILL = 0;
+int callcount = 0;
+int accel = 0;
+float accelf = 0;
 
 // Clockwise
 #define PWM0_IDLE	75000
@@ -77,30 +85,33 @@ int KILL = 0;
 // Anti-clockwise
 #define PWM1_IDLE	75000
 
+#define IDLESQUARE 5.625e9
+
 int PWM0DISP,PWM1DISP;
-int PIDDISP;
+int PIDDISP0 = 0;
+int PIDDISP1 = 0;
+
 int ACCELDISP;
-int ERRORDISP;
+int ERRORDISP0 = 0;
+int ERRORDISP1 = 0;
+
 
 int x = 0;
-int inc0 = FACTOR;
-int inc1 = -FACTOR;
 
 
 void vTaskDisplay (void*params){
 	int a;
 
 while(1){
-	printf("ACCEL[%05d] PIDO:E[%d:%d] PID[%d,%d,%d] PWM[%d:%d].\n",
+	printf("ACCEL[%05d] PIDE:[%d:%d] PIDO:[%d:%d] PWM[%d:%d] Count[%d].\n",
 					ACCELDISP,
-					PIDDISP,
-					ERRORDISP,
-					(int)(P_err),
-					(int)(I_err),
-					(int)(D_err),
+					ERRORDISP0,
+					ERRORDISP1,
+					PIDDISP0,
+					PIDDISP1,
 					PWM0DISP,
-					PWM1DISP);
-
+					PWM1DISP,
+					callcount);
 
 	a = (int)IORD_ALTERA_AVALON_PIO_DATA(PIO_0_BASE);
 
@@ -117,8 +128,7 @@ while(1){
 void vTaskCode( void * pvParameters )
 {
 
-
-
+	float pid0_res, pid1_res;
 
   while(KILL!=1)
   {
@@ -126,18 +136,34 @@ void vTaskCode( void * pvParameters )
 		i2c_read_bytes(MPU6050_RA_ACCEL_XOUT_H,&tempX,2);
 		tempX = swap16(tempX);
 
-		ACCELDISP = tempX;
 
-		temp1 = pid(-1084,(float)tempX);
+		/* Get an integer on the case */
+		accelf = (float)tempX;
+		accelf += 20000;
 
+		/* Squareroot input to attempt linearisation */
+		accelf = sqrtf(accelf);
 
-		PIDDISP = temp1;
+		ACCELDISP = accelf;
 
-		PWM0 = PWM0_IDLE - temp1;
-		PWM1 = PWM1_IDLE + temp1;
+		pid0_res = pid0(ACCEL_CENTRE,accelf);
 
+#if 1
+		PWM0 = PWM0_IDLE - pid0_res;
+		PWM1 = PWM1_IDLE + pid0_res;
+
+		PIDDISP0 = PWM0;
+		PIDDISP1 = PWM1;
+
+#else
+		PWM0 = pid0_res*PWM0_IDLE;
+		PWM1 = pid1_res*PWM1_IDLE;
+#endif
+
+#if 1
 		PWM0DISP = PWM0;
 		PWM1DISP = PWM1;
+#endif
 
 		if(PWM0<=100000 || PWM0>50000){
 			IOWR(PWM1_BASE,0,PWM0);
@@ -147,7 +173,7 @@ void vTaskCode( void * pvParameters )
 			IOWR(PWM1_BASE,1,PWM1);
 		}
 
-		//usleep(1000);
+		callcount++;
 
 		vTaskDelay(1);
 
@@ -161,23 +187,49 @@ void vTaskCode( void * pvParameters )
 
 
 
-float pid (float sp, float pv)
+float pid0 (float sp, float pv)
 {
 
 	static float err_old = 0;
 	static float err = 0;
+	static float P_err = 0;
+	static float D_err = 0;
+	static float I_err = 0;
 
 	err_old = err;
 	err = sp - pv;
 
-	ERRORDISP = err;
+	ERRORDISP0 = err;
 
 	// note
 	P_err = err;
 	I_err += err_old;
 	D_err = err - err_old;
 
-	return KP*P_err + KI*I_err + KD*D_err;
+	return KP0*P_err + KI0*I_err + KD0*D_err;
+
+}
+
+float pid1 (float sp, float pv)
+{
+
+	static float err_old = 0;
+	static float err = 0;
+	static float P_err = 0;
+	static float D_err = 0;
+	static float I_err = 0;
+
+	err_old = err;
+	err = (sp - pv);
+
+	ERRORDISP1 = err;
+
+	// note
+	P_err = err;
+	I_err += err_old;
+	D_err = err - err_old;
+
+	return KP1*P_err + KI1*I_err + KD1*D_err;
 
 }
 
